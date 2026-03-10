@@ -8,9 +8,6 @@ const path = require("path");
 const { execSync } = require("child_process");
 const { URL } = require("url");
 
-const reelUrl = process.argv[2];
-const outputName = process.argv[3];
-
 // Detect platform
 function detectPlatform(url) {
   if (!url) return null;
@@ -20,28 +17,13 @@ function detectPlatform(url) {
   return null;
 }
 
-const platform = detectPlatform(reelUrl);
-
-if (!platform) {
-  console.error("Usage: node reel-download.js <reel-url> [output-filename]");
-  console.error("Supports Instagram, Facebook, and YouTube.");
-  console.error("Examples:");
-  console.error("  node reel-download.js https://www.instagram.com/reel/DVoTfSFEthj/");
-  console.error("  node reel-download.js https://www.facebook.com/reel/1690521082387945/");
-  console.error("  node reel-download.js https://www.youtube.com/shorts/LuKrvbCppzI");
-  process.exit(1);
-}
-
 // Extract reel/video ID from URL
 function getReelId(url, platform) {
   if (platform === "youtube") {
-    // /shorts/<id>
     const shortsMatch = url.match(/\/shorts\/([^/?]+)/);
     if (shortsMatch) return { id: shortsMatch[1], type: "short" };
-    // /watch?v=<id>
     const watchMatch = url.match(/[?&]v=([^&]+)/);
     if (watchMatch) return { id: watchMatch[1], type: "watch" };
-    // youtu.be/<id>
     const shortUrlMatch = url.match(/youtu\.be\/([^/?]+)/);
     if (shortUrlMatch) return { id: shortUrlMatch[1], type: "watch" };
     return null;
@@ -50,9 +32,7 @@ function getReelId(url, platform) {
   return match ? match[1] : null;
 }
 
-const reelId = getReelId(reelUrl, platform);
-
-// Derive default output name
+// Derive default output name for a single video
 function getDefaultOutputName(platform, reelId) {
   if (platform === "youtube") {
     if (reelId && reelId.type === "short") return `yt_short_${reelId.id}.mp4`;
@@ -63,12 +43,6 @@ function getDefaultOutputName(platform, reelId) {
   if (reelId) return `${prefix}_${reelId}.mp4`;
   return `${prefix}_${Date.now()}.mp4`;
 }
-
-const finalOutput = outputName || getDefaultOutputName(platform, reelId);
-
-// For Facebook, the reel ID in the URL is the numeric video_id.
-// We use this to filter out preloaded adjacent reels.
-const fbVideoId = platform === "facebook" && reelId ? Number(reelId) : null;
 
 // Parse the efg query param (base64-encoded JSON) to get bitrate and stream type
 function parseEfg(efgParam) {
@@ -159,22 +133,10 @@ function downloadWithYtDlp(url, outputPath) {
   console.log(`Done! Saved to ${path.basename(outputPath)}`);
 }
 
-async function main() {
-  console.log(`[${platform}] Fetching reel: ${reelUrl}`);
-  if (fbVideoId) console.log(`Target video_id: ${fbVideoId}`);
-
-  // Try yt-dlp first (fast path — works for all platforms)
-  try {
-    const outputPath = path.join(process.cwd(), finalOutput);
-    downloadWithYtDlp(reelUrl, outputPath);
-    return;
-  } catch (err) {
-    if (platform === "youtube") {
-      // No fallback for YouTube — yt-dlp is the only method
-      throw err;
-    }
-    console.log(`yt-dlp failed, falling back to browser method... (${err.message})`);
-  }
+// Download via Playwright browser (fallback for Instagram/Facebook)
+async function downloadWithBrowser(reelUrl, platform, outputPath) {
+  const reelId = getReelId(reelUrl, platform);
+  const fbVideoId = platform === "facebook" && reelId ? Number(reelId) : null;
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
@@ -184,7 +146,7 @@ async function main() {
   const page = await context.newPage();
 
   // Collect .mp4 CDN URLs from network responses
-  const capturedUrls = new Map(); // baseUrl -> { url, bitrate, isAudio, vencTag, videoId, source }
+  const capturedUrls = new Map();
 
   function addCapturedUrl(url, source = "network") {
     const u = new URL(url);
@@ -193,27 +155,22 @@ async function main() {
 
     const parsed = parseEfg(efg);
 
-    // For Facebook, filter to only the target video_id (FB preloads adjacent reels)
     if (fbVideoId && parsed.videoId && parsed.videoId !== fbVideoId) return;
 
     const base = getBaseUrl(url);
 
-    // Deduplicate by base URL, prefer higher bitrate
     const existing = capturedUrls.get(base);
     if (!existing || parsed.bitrate > existing.bitrate) {
       capturedUrls.set(base, { url: base, ...parsed, source });
     }
   }
 
-  // Capture CDN URLs from actual network requests
   page.on("response", (response) => {
     const url = response.url();
     if (!isCdnUrl(url, platform)) return;
     addCapturedUrl(url);
   });
 
-  // Also intercept GraphQL / unified_cvc / HTML responses to extract all video URLs
-  // Facebook embeds DASH representation URLs in page data and API responses
   if (platform === "facebook") {
     page.on("response", async (response) => {
       const url = response.url();
@@ -225,17 +182,13 @@ async function main() {
       ) {
         try {
           const text = await response.text();
-          // Extract all fbcdn .mp4 URLs from the response body
-          // They appear in DASH XML as BaseURL elements, JSON-escaped, with HTML entities
           const urlPattern = /https?:[\\\/]+video[^"'<>\s]*?\.fbcdn\.net[^"'<>\s]*?\.mp4[^"'<>\s]*/g;
           const matches = text.match(urlPattern) || [];
           for (const raw of matches) {
-            // Minimal decoding: only fix transport-level escapes, preserve URL encoding as-is
-            // The oh= signature is computed over the URL with its original encoding
             const decoded = raw
-              .replace(/\\\//g, "/")       // JSON escape: \/ → /
-              .replace(/&amp;/g, "&")      // HTML entity: &amp; → &
-              .replace(/\\u0025/g, "%");   // unicode escape of %: \u0025 → %
+              .replace(/\\\//g, "/")
+              .replace(/&amp;/g, "&")
+              .replace(/\\u0025/g, "%");
             try {
               addCapturedUrl(decoded, "html");
             } catch {}
@@ -245,50 +198,38 @@ async function main() {
     });
   }
 
-  // Navigate to the reel
   await page.goto(reelUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-  // Dismiss login dialog
   try {
     if (platform === "instagram") {
       await page.locator('svg[aria-label="Close"]').first().click({ timeout: 5000 });
     } else {
-      // Facebook login dialog has a "Close" button
       await page.locator('div[role="dialog"] >> text=Close').first().click({ timeout: 5000 });
     }
     console.log("Dismissed login dialog");
-  } catch {
-    // No dialog, that's fine
-  }
+  } catch {}
   await page.waitForTimeout(1000);
 
-  // Try to trigger higher quality by playing the video via JS and seeking
   console.log("Triggering video playback...");
   try {
     await page.evaluate(() => {
       const video = document.querySelector("video");
       if (video) {
         video.play();
-        // Seeking can trigger adaptive bitrate to request higher quality
         video.currentTime = 0;
       }
     });
-  } catch {
-    // Best effort
-  }
+  } catch {}
 
-  // Wait for video streams to load (higher quality streams arrive after playback starts)
   console.log("Waiting for video streams to load...");
   await page.waitForTimeout(10000);
 
-  // Process captured URLs (browser still open for downloading)
   const entries = Array.from(capturedUrls.values());
   console.log(`Captured ${entries.length} unique stream URLs`);
 
   if (entries.length === 0) {
     await browser.close();
-    console.error("No video streams captured. The reel may be private or the page structure changed.");
-    process.exit(1);
+    throw new Error("No video streams captured. The reel may be private or the page structure changed.");
   }
 
   const audioStreams = entries.filter((e) => e.isAudio);
@@ -299,18 +240,14 @@ async function main() {
 
   if (videoStreams.length === 0) {
     await browser.close();
-    console.error("No video streams found.");
-    process.exit(1);
+    throw new Error("No video streams found.");
   }
 
-  // Pick highest bitrate video, preferring network sources (verified downloadable)
-  // then fall back to html-extracted sources
   const networkVideos = videoStreams.filter((e) => e.source === "network");
   const htmlVideos = videoStreams.filter((e) => e.source === "html");
   networkVideos.sort((a, b) => b.bitrate - a.bitrate);
   htmlVideos.sort((a, b) => b.bitrate - a.bitrate);
 
-  // We'll try network first, then html
   const videoCandidates = [...networkVideos, ...htmlVideos];
   const bestVideo = videoCandidates[0];
   console.log(`Selected video: bitrate=${bestVideo.bitrate}, venc=${bestVideo.vencTag}, source=${bestVideo.source}`);
@@ -320,19 +257,15 @@ async function main() {
 
   const tmpVideo = path.join(process.cwd(), `_tmp_video_${Date.now()}.mp4`);
   const tmpAudio = path.join(process.cwd(), `_tmp_audio_${Date.now()}.mp4`);
-  const outputPath = path.join(process.cwd(), finalOutput);
 
   const apiContext = context.request;
 
-  // Download video — try candidates in order until one succeeds
   console.log("Downloading video stream...");
   let videoDownloaded = false;
   for (const candidate of videoCandidates) {
     try {
       await downloadFile(candidate.url, tmpVideo, apiContext);
-      if (!videoDownloaded) {
-        console.log(`  Downloaded: bitrate=${candidate.bitrate}, source=${candidate.source}`);
-      }
+      console.log(`  Downloaded: bitrate=${candidate.bitrate}, source=${candidate.source}`);
       videoDownloaded = true;
       break;
     } catch (err) {
@@ -341,12 +274,10 @@ async function main() {
   }
   if (!videoDownloaded) {
     await browser.close();
-    console.error("All video download attempts failed.");
-    process.exit(1);
+    throw new Error("All video download attempts failed.");
   }
 
   if (audioStreams.length > 0) {
-    // Pick highest bitrate audio, preferring network sources
     const networkAudio = audioStreams.filter((e) => e.source === "network");
     const htmlAudio = audioStreams.filter((e) => e.source === "html");
     networkAudio.sort((a, b) => b.bitrate - a.bitrate);
@@ -361,9 +292,7 @@ async function main() {
         await downloadFile(candidate.url, tmpAudio, apiContext);
         audioDownloaded = true;
         break;
-      } catch {
-        // try next
-      }
+      } catch {}
     }
     if (!audioDownloaded) {
       console.log("Warning: Could not download audio stream, proceeding without audio.");
@@ -372,7 +301,6 @@ async function main() {
     await browser.close();
 
     if (audioDownloaded) {
-      // Merge with ffmpeg
       console.log("Merging video + audio with ffmpeg...");
       try {
         execSync(
@@ -380,18 +308,15 @@ async function main() {
           { stdio: "pipe" }
         );
       } catch (err) {
-        console.error("ffmpeg merge failed:", err.stderr?.toString() || err.message);
-        process.exit(1);
+        throw new Error("ffmpeg merge failed: " + (err.stderr?.toString() || err.message));
       }
       fs.unlinkSync(tmpVideo);
       fs.unlinkSync(tmpAudio);
     } else {
-      // No audio — just re-encode video
       try {
         execSync(`ffmpeg -y -i "${tmpVideo}" -c:v libx264 "${outputPath}"`, { stdio: "pipe" });
       } catch (err) {
-        console.error("ffmpeg failed:", err.stderr?.toString() || err.message);
-        process.exit(1);
+        throw new Error("ffmpeg failed: " + (err.stderr?.toString() || err.message));
       }
       fs.unlinkSync(tmpVideo);
     }
@@ -404,13 +329,152 @@ async function main() {
         stdio: "pipe",
       });
     } catch (err) {
-      console.error("ffmpeg failed:", err.stderr?.toString() || err.message);
-      process.exit(1);
+      throw new Error("ffmpeg failed: " + (err.stderr?.toString() || err.message));
     }
     fs.unlinkSync(tmpVideo);
   }
 
-  console.log(`Done! Saved to ${finalOutput}`);
+  console.log(`Done! Saved to ${path.basename(outputPath)}`);
+}
+
+// Download a single video: try yt-dlp first, fall back to browser for IG/FB
+async function downloadVideo(url, outputPath) {
+  const platform = detectPlatform(url);
+  if (!platform) throw new Error(`Unsupported URL: ${url}`);
+
+  console.log(`\n[${platform}] Fetching: ${url}`);
+
+  try {
+    downloadWithYtDlp(url, outputPath);
+    return;
+  } catch (err) {
+    if (platform === "youtube") throw err;
+    console.log(`yt-dlp failed, falling back to browser method... (${err.message})`);
+  }
+
+  await downloadWithBrowser(url, platform, outputPath);
+}
+
+// Combine multiple videos with black intermissions using ffmpeg
+function combineVideos(videoPaths, outputPath, intermissionSecs) {
+  console.log(`\nCombining ${videoPaths.length} videos with ${intermissionSecs}s intermissions...`);
+
+  const inputs = videoPaths.map((p) => `-i "${p}"`).join(" ");
+
+  // Build filter_complex: normalize all clips to 1080x1920 30fps, insert black+silence between them
+  const filters = [];
+  const concatParts = [];
+  let segmentCount = 0;
+
+  for (let i = 0; i < videoPaths.length; i++) {
+    // Normalize video: scale to 1080x1920 (vertical), pad with black bars, 30fps
+    filters.push(
+      `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30[v${i}]`
+    );
+    // Normalize audio: resample to 44100Hz stereo
+    filters.push(
+      `[${i}:a]aresample=44100,aformat=channel_layouts=stereo[a${i}]`
+    );
+
+    // Insert black intermission before each clip (except the first)
+    if (i > 0) {
+      filters.push(
+        `color=c=black:s=1080x1920:d=${intermissionSecs}:r=30[black${i}]`
+      );
+      filters.push(
+        `anullsrc=r=44100:cl=stereo,atrim=0:${intermissionSecs}[silence${i}]`
+      );
+      concatParts.push(`[black${i}][silence${i}]`);
+      segmentCount++;
+    }
+
+    concatParts.push(`[v${i}][a${i}]`);
+    segmentCount++;
+  }
+
+  filters.push(
+    `${concatParts.join("")}concat=n=${segmentCount}:v=1:a=1[outv][outa]`
+  );
+
+  const filterComplex = filters.join(";");
+
+  try {
+    execSync(
+      `ffmpeg -y ${inputs} -filter_complex '${filterComplex}' -map "[outv]" -map "[outa]" -c:v libx264 -c:a aac "${outputPath}"`,
+      { stdio: "inherit", timeout: 300000 }
+    );
+  } catch (err) {
+    throw new Error("ffmpeg combine failed: " + (err.message));
+  }
+
+  console.log(`\nCombined video saved to ${path.basename(outputPath)}`);
+}
+
+// --- Argument parsing ---
+// Usage:
+//   node reel-download.js <url> [output]                  — single video (backward compatible)
+//   node reel-download.js <url1> <url2> ... [-o output]   — multiple videos, combined with intermissions
+
+const args = process.argv.slice(2);
+const urls = [];
+let outputArg = null;
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "-o" && args[i + 1]) {
+    outputArg = args[++i];
+  } else if (detectPlatform(args[i])) {
+    urls.push(args[i]);
+  } else if (urls.length === 1 && !outputArg && i === args.length - 1) {
+    // Backward compat: single URL followed by output name
+    outputArg = args[i];
+  } else {
+    console.error(`Unrecognized argument: ${args[i]}`);
+    process.exit(1);
+  }
+}
+
+if (urls.length === 0) {
+  console.error("Usage:");
+  console.error("  node reel-download.js <url> [output-filename]");
+  console.error("  node reel-download.js <url1> <url2> <url3> [-o combined-output.mp4]");
+  console.error("\nSupports Instagram, Facebook, and YouTube.");
+  console.error("Multiple URLs are combined into one video with 3s black intermissions.");
+  process.exit(1);
+}
+
+async function main() {
+  if (urls.length === 1) {
+    // Single video — simple download
+    const url = urls[0];
+    const platform = detectPlatform(url);
+    const reelId = getReelId(url, platform);
+    const finalOutput = outputArg || getDefaultOutputName(platform, reelId);
+    const outputPath = path.join(process.cwd(), finalOutput);
+    await downloadVideo(url, outputPath);
+  } else {
+    // Multiple videos — download each, then combine
+    const tempFiles = [];
+    try {
+      for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        const platform = detectPlatform(url);
+        const reelId = getReelId(url, platform);
+        const defaultName = getDefaultOutputName(platform, reelId);
+        const tmpPath = path.join(process.cwd(), `_tmp_clip${i}_${defaultName}`);
+        await downloadVideo(url, tmpPath);
+        tempFiles.push(tmpPath);
+      }
+
+      const finalOutput = outputArg || `combined_${Date.now()}.mp4`;
+      const outputPath = path.join(process.cwd(), finalOutput);
+      combineVideos(tempFiles, outputPath, 3);
+    } finally {
+      // Clean up temp files
+      for (const tmp of tempFiles) {
+        try { fs.unlinkSync(tmp); } catch {}
+      }
+    }
+  }
 }
 
 main().catch((err) => {

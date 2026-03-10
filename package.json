@@ -1,14 +1,25 @@
 {
-  "name": "insta-video",
+  "name": "videogaga",
   "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "Download and combine videos from Instagram, Facebook, and YouTube",
+  "main": "reel-download.js",
+  "bin": {
+    "videogaga": "./reel-download.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "scripts": {
+    "start": "node reel-download.js"
+  },
+  "keywords": [
+    "video",
+    "download",
+    "instagram",
+    "facebook",
+    "youtube",
+    "reels",
+    "shorts"
+  ],
+  "author": "Arvind Naidu",
+  "license": "MIT",
   "dependencies": {
     "playwright": "^1.58.2"
   }
