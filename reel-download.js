@@ -16,6 +16,7 @@ function detectPlatform(url) {
   if (!url) return null;
   if (url.includes("instagram.com")) return "instagram";
   if (url.includes("facebook.com") || url.includes("fb.watch")) return "facebook";
+  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
   return null;
 }
 
@@ -23,15 +24,28 @@ const platform = detectPlatform(reelUrl);
 
 if (!platform) {
   console.error("Usage: node reel-download.js <reel-url> [output-filename]");
-  console.error("Supports Instagram and Facebook reels.");
+  console.error("Supports Instagram, Facebook, and YouTube.");
   console.error("Examples:");
   console.error("  node reel-download.js https://www.instagram.com/reel/DVoTfSFEthj/");
   console.error("  node reel-download.js https://www.facebook.com/reel/1690521082387945/");
+  console.error("  node reel-download.js https://www.youtube.com/shorts/LuKrvbCppzI");
   process.exit(1);
 }
 
-// Extract reel ID from URL
+// Extract reel/video ID from URL
 function getReelId(url, platform) {
+  if (platform === "youtube") {
+    // /shorts/<id>
+    const shortsMatch = url.match(/\/shorts\/([^/?]+)/);
+    if (shortsMatch) return { id: shortsMatch[1], type: "short" };
+    // /watch?v=<id>
+    const watchMatch = url.match(/[?&]v=([^&]+)/);
+    if (watchMatch) return { id: watchMatch[1], type: "watch" };
+    // youtu.be/<id>
+    const shortUrlMatch = url.match(/youtu\.be\/([^/?]+)/);
+    if (shortUrlMatch) return { id: shortUrlMatch[1], type: "watch" };
+    return null;
+  }
   const match = url.match(/\/reel\/([^/?]+)/);
   return match ? match[1] : null;
 }
@@ -40,6 +54,11 @@ const reelId = getReelId(reelUrl, platform);
 
 // Derive default output name
 function getDefaultOutputName(platform, reelId) {
+  if (platform === "youtube") {
+    if (reelId && reelId.type === "short") return `yt_short_${reelId.id}.mp4`;
+    if (reelId) return `yt_${reelId.id}.mp4`;
+    return `yt_${Date.now()}.mp4`;
+  }
   const prefix = platform === "facebook" ? "fb_reel" : "ig_reel";
   if (reelId) return `${prefix}_${reelId}.mp4`;
   return `${prefix}_${Date.now()}.mp4`;
@@ -120,9 +139,42 @@ async function downloadFile(url, dest, apiRequestContext) {
   });
 }
 
+// Download via yt-dlp (works for YouTube, Instagram, Facebook, and many other sites)
+function downloadWithYtDlp(url, outputPath) {
+  try {
+    execSync("which yt-dlp", { stdio: "pipe" });
+  } catch {
+    throw new Error("yt-dlp is not installed. Install it with: brew install yt-dlp");
+  }
+  console.log(`[yt-dlp] Downloading: ${url}`);
+  console.log(`Output: ${outputPath}`);
+  try {
+    execSync(
+      `yt-dlp -f "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
+      { stdio: "inherit" }
+    );
+  } catch (err) {
+    throw new Error(`yt-dlp download failed: ${err.message}`);
+  }
+  console.log(`Done! Saved to ${path.basename(outputPath)}`);
+}
+
 async function main() {
   console.log(`[${platform}] Fetching reel: ${reelUrl}`);
   if (fbVideoId) console.log(`Target video_id: ${fbVideoId}`);
+
+  // Try yt-dlp first (fast path — works for all platforms)
+  try {
+    const outputPath = path.join(process.cwd(), finalOutput);
+    downloadWithYtDlp(reelUrl, outputPath);
+    return;
+  } catch (err) {
+    if (platform === "youtube") {
+      // No fallback for YouTube — yt-dlp is the only method
+      throw err;
+    }
+    console.log(`yt-dlp failed, falling back to browser method... (${err.message})`);
+  }
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
