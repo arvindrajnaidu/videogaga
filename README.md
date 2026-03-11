@@ -14,41 +14,74 @@ Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) as the primary downloader with a
 ## Install
 
 ```bash
-npm install
+npm install videogaga
 ```
 
-## Usage
-
-### Single video
+Or install globally for CLI usage:
 
 ```bash
-node reel-download.js <url> [output-filename]
+npm install -g videogaga
 ```
 
-### Multiple videos (combined with 3s black intermissions)
+## CLI Usage
 
 ```bash
-node reel-download.js <url1> <url2> <url3> [-o combined-output.mp4]
-```
+# Download a single video
+videogaga https://youtube.com/shorts/abc123
 
-### Examples
+# Download with custom output name
+videogaga https://www.instagram.com/reel/abc123/ my-reel.mp4
 
-```bash
-# Download a YouTube Short
-node reel-download.js https://youtube.com/shorts/abc123
-
-# Download an Instagram Reel
-node reel-download.js https://www.instagram.com/reel/abc123/
-
-# Download a Facebook Reel
-node reel-download.js https://www.facebook.com/reel/123456789
-
-# Combine multiple videos
-node reel-download.js \
+# Combine multiple videos (3s black intermissions between clips)
+videogaga \
   https://youtube.com/shorts/abc \
   https://www.instagram.com/reel/xyz/ \
   -o compilation.mp4
 ```
+
+## Library Usage
+
+```js
+const { downloadVideo, combineVideos, detectPlatform, getVideoId, getDefaultOutputName } = require("videogaga");
+
+// Download a single video
+await downloadVideo("https://youtube.com/shorts/abc123", "/path/to/output.mp4");
+
+// Download and combine multiple videos
+const files = ["/path/to/clip1.mp4", "/path/to/clip2.mp4"];
+combineVideos(files, "/path/to/combined.mp4", 3); // 3s intermission
+
+// Utility: detect platform from URL
+detectPlatform("https://www.instagram.com/reel/abc/"); // "instagram"
+
+// Utility: extract video ID
+getVideoId("https://youtube.com/shorts/xyz", "youtube"); // { id: "xyz", type: "short" }
+
+// Utility: generate default filename
+getDefaultOutputName("youtube", { id: "xyz", type: "short" }); // "yt_short_xyz.mp4"
+```
+
+## API
+
+### `downloadVideo(url, outputPath) → Promise<void>`
+
+Downloads a video from a supported URL. Tries yt-dlp first, falls back to Playwright browser capture for Instagram/Facebook.
+
+### `combineVideos(videoPaths, outputPath, intermissionSecs?) → void`
+
+Combines multiple local video files into one. Normalizes all clips to 1080x1920 @ 30fps and inserts black intermissions between them. Default intermission is 3 seconds.
+
+### `detectPlatform(url) → string | null`
+
+Returns `"instagram"`, `"facebook"`, `"youtube"`, or `null`.
+
+### `getVideoId(url, platform) → object | string | null`
+
+Extracts the video/reel ID from a URL.
+
+### `getDefaultOutputName(platform, videoId) → string`
+
+Generates a default output filename based on platform and video ID.
 
 ## How it works
 
