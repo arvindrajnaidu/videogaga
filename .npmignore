@@ -1,0 +1,6 @@
+*.mp4
+*.txt
+.DS_Store
+_tmp_*
+.claude/
+ig-download.js
