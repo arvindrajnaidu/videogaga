@@ -1,8 +1,15 @@
 {
   "name": "videogaga",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Download and combine videos from Instagram, Facebook, and YouTube",
-  "main": "reel-download.js",
+  "main": "index.js",
+  "module": "index.mjs",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js"
+    }
+  },
   "bin": {
     "videogaga": "./reel-download.js"
   },

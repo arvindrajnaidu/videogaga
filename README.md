@@ -42,6 +42,10 @@ videogaga \
 ## Library Usage
 
 ```js
+// ESM
+import { downloadVideo, combineVideos, detectPlatform, getVideoId, getDefaultOutputName } from "videogaga";
+
+// CommonJS
 const { downloadVideo, combineVideos, detectPlatform, getVideoId, getDefaultOutputName } = require("videogaga");
 
 // Download a single video
