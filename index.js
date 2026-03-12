@@ -38,8 +38,15 @@ function getVideoId(url, platform) {
     if (shortUrlMatch) return { id: shortUrlMatch[1], type: "watch" };
     return null;
   }
-  const match = url.match(/\/reel\/([^/?]+)/);
-  return match ? match[1] : null;
+  // Match /reel/<id> (works for both Instagram and Facebook)
+  const reelMatch = url.match(/\/reel\/([^/?]+)/);
+  if (reelMatch) return reelMatch[1];
+  // Facebook /watch/?v=<id>
+  if (platform === "facebook") {
+    const watchMatch = url.match(/[?&]v=(\d+)/);
+    if (watchMatch) return watchMatch[1];
+  }
+  return null;
 }
 
 function getDefaultOutputName(platform, videoId) {
@@ -140,9 +147,6 @@ async function downloadWithYtDlp(url, outputPath) {
 }
 
 async function downloadWithBrowser(reelUrl, platform, outputPath) {
-  const videoId = getVideoId(reelUrl, platform);
-  const fbVideoId = platform === "facebook" && videoId ? Number(videoId) : null;
-
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     userAgent:
@@ -151,6 +155,10 @@ async function downloadWithBrowser(reelUrl, platform, outputPath) {
   const page = await context.newPage();
 
   const capturedUrls = new Map();
+  // Track the target video ID — set after page loads and we resolve redirects
+  let targetVideoId = null;
+  // Lock to the first video_id we see in CDN streams, to avoid picking up recommended videos
+  let lockedVideoId = null;
 
   function addCapturedUrl(url, source = "network") {
     const u = new URL(url);
@@ -159,7 +167,18 @@ async function downloadWithBrowser(reelUrl, platform, outputPath) {
 
     const parsed = parseEfg(efg);
 
-    if (fbVideoId && parsed.videoId && parsed.videoId !== fbVideoId) return;
+    // If we have a known target video ID (from resolved URL), filter strictly
+    if (targetVideoId && parsed.videoId && parsed.videoId !== targetVideoId) return;
+
+    // If no target ID, lock onto the first video_id we encounter to avoid mixing videos
+    if (!targetVideoId && parsed.videoId) {
+      if (!lockedVideoId) {
+        lockedVideoId = parsed.videoId;
+        console.log(`  Locked onto video_id: ${lockedVideoId}`);
+      } else if (parsed.videoId !== lockedVideoId) {
+        return;
+      }
+    }
 
     const base = getBaseUrl(url);
 
@@ -203,6 +222,19 @@ async function downloadWithBrowser(reelUrl, platform, outputPath) {
   }
 
   await page.goto(reelUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+  // After navigation, resolve the actual URL (handles /share/v/ → /reel/ redirects)
+  const resolvedUrl = page.url();
+  console.log(`Resolved URL: ${resolvedUrl}`);
+  const resolvedVideoId = getVideoId(resolvedUrl, platform);
+  if (platform === "facebook" && resolvedVideoId) {
+    targetVideoId = Number(resolvedVideoId);
+    console.log(`Target Facebook video ID: ${targetVideoId}`);
+  } else if (platform === "instagram" && resolvedVideoId) {
+    // Instagram reel IDs are strings, not used for efg filtering,
+    // but we log it for debugging
+    console.log(`Target Instagram reel ID: ${resolvedVideoId}`);
+  }
 
   try {
     if (platform === "instagram") {
