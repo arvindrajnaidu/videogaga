@@ -53,7 +53,7 @@ async function main() {
 
       const finalOutput = outputArg || `combined_${Date.now()}.mp4`;
       const outputPath = path.join(process.cwd(), finalOutput);
-      combineVideos(tempFiles, outputPath, 3);
+      await combineVideos(tempFiles, outputPath, 3);
     } finally {
       for (const tmp of tempFiles) {
         try { fs.unlinkSync(tmp); } catch {}

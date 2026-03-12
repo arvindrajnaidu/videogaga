@@ -3,8 +3,22 @@ const https = require("https");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { exec, spawn } = require("child_process");
+const { promisify } = require("util");
 const { URL } = require("url");
+
+const execAsync = promisify(exec);
+
+function spawnAsync(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: "inherit", ...options });
+    child.on("close", (code) => {
+      if (code !== 0) reject(new Error(`${command} exited with code ${code}`));
+      else resolve();
+    });
+    child.on("error", reject);
+  });
+}
 
 function detectPlatform(url) {
   if (!url) return null;
@@ -104,19 +118,21 @@ async function downloadFile(url, dest, apiRequestContext) {
   });
 }
 
-function downloadWithYtDlp(url, outputPath) {
+async function downloadWithYtDlp(url, outputPath) {
   try {
-    execSync("which yt-dlp", { stdio: "pipe" });
+    await execAsync("which yt-dlp");
   } catch {
     throw new Error("yt-dlp is not installed. Install it with: brew install yt-dlp");
   }
   console.log(`[yt-dlp] Downloading: ${url}`);
   console.log(`Output: ${outputPath}`);
   try {
-    execSync(
-      `yt-dlp -f "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]" --merge-output-format mp4 -o "${outputPath}" "${url}"`,
-      { stdio: "inherit" }
-    );
+    await spawnAsync("yt-dlp", [
+      "-f", "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]",
+      "--merge-output-format", "mp4",
+      "-o", outputPath,
+      url,
+    ]);
   } catch (err) {
     throw new Error(`yt-dlp download failed: ${err.message}`);
   }
@@ -291,20 +307,17 @@ async function downloadWithBrowser(reelUrl, platform, outputPath) {
     if (audioDownloaded) {
       console.log("Merging video + audio with ffmpeg...");
       try {
-        execSync(
-          `ffmpeg -y -i "${tmpVideo}" -i "${tmpAudio}" -c:v libx264 -c:a copy "${outputPath}"`,
-          { stdio: "pipe" }
-        );
+        await spawnAsync("ffmpeg", ["-y", "-i", tmpVideo, "-i", tmpAudio, "-c:v", "libx264", "-c:a", "copy", outputPath], { stdio: "pipe" });
       } catch (err) {
-        throw new Error("ffmpeg merge failed: " + (err.stderr?.toString() || err.message));
+        throw new Error("ffmpeg merge failed: " + err.message);
       }
       fs.unlinkSync(tmpVideo);
       fs.unlinkSync(tmpAudio);
     } else {
       try {
-        execSync(`ffmpeg -y -i "${tmpVideo}" -c:v libx264 "${outputPath}"`, { stdio: "pipe" });
+        await spawnAsync("ffmpeg", ["-y", "-i", tmpVideo, "-c:v", "libx264", outputPath], { stdio: "pipe" });
       } catch (err) {
-        throw new Error("ffmpeg failed: " + (err.stderr?.toString() || err.message));
+        throw new Error("ffmpeg failed: " + err.message);
       }
       fs.unlinkSync(tmpVideo);
     }
@@ -313,11 +326,9 @@ async function downloadWithBrowser(reelUrl, platform, outputPath) {
 
     console.log("No separate audio stream found. Re-encoding video...");
     try {
-      execSync(`ffmpeg -y -i "${tmpVideo}" -c:v libx264 -c:a copy "${outputPath}"`, {
-        stdio: "pipe",
-      });
+      await spawnAsync("ffmpeg", ["-y", "-i", tmpVideo, "-c:v", "libx264", "-c:a", "copy", outputPath], { stdio: "pipe" });
     } catch (err) {
-      throw new Error("ffmpeg failed: " + (err.stderr?.toString() || err.message));
+      throw new Error("ffmpeg failed: " + err.message);
     }
     fs.unlinkSync(tmpVideo);
   }
@@ -332,7 +343,7 @@ async function downloadVideo(url, outputPath) {
   console.log(`\n[${platform}] Fetching: ${url}`);
 
   try {
-    downloadWithYtDlp(url, outputPath);
+    await downloadWithYtDlp(url, outputPath);
     return;
   } catch (err) {
     if (platform === "youtube") throw err;
@@ -342,10 +353,8 @@ async function downloadVideo(url, outputPath) {
   await downloadWithBrowser(url, platform, outputPath);
 }
 
-function combineVideos(videoPaths, outputPath, intermissionSecs = 3) {
+async function combineVideos(videoPaths, outputPath, intermissionSecs = 3) {
   console.log(`\nCombining ${videoPaths.length} videos with ${intermissionSecs}s intermissions...`);
-
-  const inputs = videoPaths.map((p) => `-i "${p}"`).join(" ");
 
   const filters = [];
   const concatParts = [];
@@ -380,13 +389,16 @@ function combineVideos(videoPaths, outputPath, intermissionSecs = 3) {
 
   const filterComplex = filters.join(";");
 
+  const ffmpegArgs = [];
+  for (const p of videoPaths) {
+    ffmpegArgs.push("-i", p);
+  }
+  ffmpegArgs.push("-filter_complex", filterComplex, "-map", "[outv]", "-map", "[outa]", "-c:v", "libx264", "-c:a", "aac", outputPath);
+
   try {
-    execSync(
-      `ffmpeg -y ${inputs} -filter_complex '${filterComplex}' -map "[outv]" -map "[outa]" -c:v libx264 -c:a aac "${outputPath}"`,
-      { stdio: "inherit", timeout: 300000 }
-    );
+    await spawnAsync("ffmpeg", ["-y", ...ffmpegArgs], { timeout: 300000 });
   } catch (err) {
-    throw new Error("ffmpeg combine failed: " + (err.message));
+    throw new Error("ffmpeg combine failed: " + err.message);
   }
 
   console.log(`\nCombined video saved to ${path.basename(outputPath)}`);
