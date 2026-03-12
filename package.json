@@ -1,6 +1,6 @@
 {
   "name": "videogaga",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Download and combine videos from Instagram, Facebook, and YouTube",
   "main": "index.js",
   "module": "index.mjs",

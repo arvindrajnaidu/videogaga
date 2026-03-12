@@ -374,12 +374,9 @@ async function downloadVideo(url, outputPath) {
 
   console.log(`\n[${platform}] Fetching: ${url}`);
 
-  try {
+  if (platform === "youtube") {
     await downloadWithYtDlp(url, outputPath);
     return;
-  } catch (err) {
-    if (platform === "youtube") throw err;
-    console.log(`yt-dlp failed, falling back to browser method... (${err.message})`);
   }
 
   await downloadWithBrowser(url, platform, outputPath);
