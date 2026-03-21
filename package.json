@@ -1,6 +1,6 @@
 {
   "name": "videogaga",
-  "version": "1.4.1",
+  "version": "2.0.0",
   "description": "Download and combine videos from Instagram, Facebook, and YouTube",
   "main": "index.js",
   "module": "index.mjs",
@@ -11,7 +11,8 @@
     }
   },
   "bin": {
-    "videogaga": "./reel-download.js"
+    "videogaga": "./reel-download.js",
+    "videogaga-speedup": "./speedup.js"
   },
   "scripts": {
     "start": "node reel-download.js"
@@ -27,7 +28,5 @@
   ],
   "author": "Arvind Naidu",
   "license": "MIT",
-  "dependencies": {
-    "playwright": "^1.58.2"
-  }
+  "dependencies": {}
 }
